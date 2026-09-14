@@ -1,0 +1,908 @@
+// BOXXERA — Professional Boxing Infrastructure
+// Prisma schema — V1 core + V1.5 groundwork
+// Multi-tenant / multi-jurisdiction from day one:
+// Country -> Region/State -> City -> Commission -> Gym -> Fighter
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------------------------
+
+enum Role {
+  SUPER_ADMIN
+  BOXERA_ADMIN
+  COMMISSION_ADMIN
+  GYM_ADMIN
+  FIGHTER
+  PROMOTER
+  SPONSOR
+  COMMUNITY_MEMBER
+}
+
+enum FighterStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+  RETIRED
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum FightResult {
+  WIN
+  LOSS
+  DRAW
+  NO_CONTEST
+}
+
+enum FightMethod {
+  KO
+  TKO
+  DECISION
+  TECHNICAL_DECISION
+  DQ
+  OTHER
+}
+
+enum LicenseStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  SUSPENDED
+  REVOKED
+}
+
+enum CommissionStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum GymStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum BenefitCategory {
+  HEALTH
+  PHARMACY
+  LEGAL
+  TRAINING
+  BUSINESS
+  OTHER
+}
+
+// Sponsor pipeline — see brief section 11. Nothing here auto-advances; a
+// BOXXERA team member (responsibleUserId on Sponsorship) moves the stage.
+enum SponsorshipStatus {
+  DISCOVERED
+  INTERESTED
+  CONTACTED
+  NEGOTIATING
+  CONFIRMED
+  LOST
+}
+
+// Boxer membership — the boxer DOES pay this (see BoxerMembership below).
+// It is deliberately separate from any other payment concept in the system.
+enum BoxerMembershipStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  PENDING
+}
+
+enum MembershipPaymentStatus {
+  PAID
+  PENDING
+  FAILED
+}
+
+enum EventStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum MembershipType {
+  FAN
+  SUPPORTER
+  PARTNER
+}
+
+enum MembershipStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// --- Digital Fight & Event Engine ------------------------------------------
+// Everything below this line supports "Fighter -> Fight Opportunity -> Fight
+// -> Event -> Revenue/Costs -> Profit". Nothing above this line changes.
+
+enum OpportunityStatus {
+  DISCOVERED
+  SUGGESTED
+  CONTACTING
+  NEGOTIATING
+  APPROVED
+  REJECTED
+  CONVERTED_TO_FIGHT
+  CANCELLED
+}
+
+enum OpportunitySource {
+  PROMOTER
+  COMMISSION
+  GYM
+  FIGHTER
+  BOXXERA
+  ALGORITHM
+}
+
+enum FightStatus {
+  DRAFT
+  NEGOTIATING
+  PENDING_COMMISSION
+  PENDING_MEDICAL
+  PENDING_CONTRACT
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+// Generic three-state approval used for commission / medical / contract
+// sign-off on a Fight. Never auto-advances — see lib/opportunities/rbac.
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum EventOwner {
+  EXTERNAL_PROMOTER
+  BOXXERA
+  CO_PRODUCED
+}
+
+enum EventCostCategory {
+  FIGHTER_PURSE
+  VENUE
+  COMMISSION
+  MEDICAL
+  PRODUCTION
+  SECURITY
+  TRAVEL
+  HOTEL
+  MARKETING
+  INSURANCE
+  STAFF
+  EQUIPMENT
+  OTHER
+}
+
+enum EventRevenueCategory {
+  TICKETS
+  SPONSORSHIP
+  STREAMING
+  PPV
+  HOSPITALITY
+  ACTIVATION
+  MERCHANDISING
+  MEDIA
+  OTHER
+}
+
+// Every money figure in the event-economics engine carries one of these —
+// a projected number must never be displayed as if it were confirmed.
+enum DataConfidence {
+  CONFIRMED
+  ESTIMATED
+  ASSUMED
+  PROPOSED
+}
+
+enum LineItemStatus {
+  PLANNED
+  PENDING
+  PAID
+  RECEIVED
+  CANCELLED
+}
+
+enum TaskStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+  CANCELLED
+}
+
+// "Mi Apoyo BOXXERA" — the specific action a boxer picked. Task.category
+// stays the broad routing bucket ("medical" | "legal" | ...); this is the
+// precise reason, kept as its own enum so the UI buttons and the stored
+// data can never drift out of sync with each other.
+enum SupportRequestType {
+  ORIENTACION_MEDICA
+  LESION
+  ESTUDIO
+  MEDICAMENTO
+  ORIENTACION_LEGAL
+  DUDA_CONTRATO
+  DUDA_LICENCIA
+  AYUDA_PELEA
+}
+
+// ---------------------------------------------------------------------------
+// GEOGRAPHY (multi-jurisdiction backbone)
+// ---------------------------------------------------------------------------
+
+model Country {
+  id        String   @id @default(cuid())
+  code      String   @unique // "MX", "US"
+  name      String
+  regions   Region[]
+  createdAt DateTime @default(now())
+}
+
+model Region {
+  id        String   @id @default(cuid())
+  name      String // e.g. "Chihuahua", "Texas"
+  code      String? // e.g. "CHH", "TX"
+  country   Country  @relation(fields: [countryId], references: [id])
+  countryId String
+  cities    City[]
+  createdAt DateTime @default(now())
+
+  @@unique([countryId, name])
+}
+
+model City {
+  id           String        @id @default(cuid())
+  name         String
+  region       Region        @relation(fields: [regionId], references: [id])
+  regionId     String
+  commissions  Commission[]
+  gyms         Gym[]
+  fighters     Fighter[]
+  createdAt    DateTime      @default(now())
+
+  @@unique([regionId, name])
+}
+
+// ---------------------------------------------------------------------------
+// USERS & RBAC
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String
+  name          String
+  role          Role      @default(COMMUNITY_MEMBER)
+  commissionId  String? // scopes COMMISSION_ADMIN to one jurisdiction
+  commission    Commission? @relation(fields: [commissionId], references: [id])
+  gymId         String? // scopes GYM_ADMIN to one gym
+  gym           Gym?      @relation(fields: [gymId], references: [id])
+  fighterId     String?   @unique // links a FIGHTER-role user to their Fighter profile
+  fighter       Fighter?  @relation(fields: [fighterId], references: [id])
+  sponsorId     String?   @unique // links a SPONSOR-role user to their Sponsor record
+  sponsor       Sponsor?  @relation(fields: [sponsorId], references: [id])
+  communityMember CommunityMember?
+  auditLogs     AuditLog[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Fight & Event Engine — a PROMOTER-role user owns the opportunities/events they run.
+  opportunitiesCreated FightOpportunity[]
+  eventsPromoted       Event[]
+  tasksAssigned        Task[]
+  sponsorshipsHandled  Sponsorship[]
+}
+
+// ---------------------------------------------------------------------------
+// COMMISSIONS
+// ---------------------------------------------------------------------------
+
+model Commission {
+  id           String           @id @default(cuid())
+  name         String
+  shortName    String?
+  city         City             @relation(fields: [cityId], references: [id])
+  cityId       String
+  jurisdiction String? // free-text description of scope, e.g. "Ciudad Juárez, Chihuahua"
+  status       CommissionStatus @default(ACTIVE)
+  logoUrl      String?
+  contactEmail String?
+  contactPhone String?
+
+  fighters   Fighter[]
+  gyms       Gym[]
+  licenses   License[]
+  rankings   Ranking[]
+  users      User[]
+  events     Event[]
+  fightRecords FightRecord[]
+  opportunities FightOpportunity[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// GYMS
+// ---------------------------------------------------------------------------
+
+model Gym {
+  id             String    @id @default(cuid())
+  name           String
+  city           City      @relation(fields: [cityId], references: [id])
+  cityId         String
+  address        String?
+  phone          String?
+  email          String?
+  headCoach      String?
+  responsibleName String?
+  description    String?
+  photoUrl       String?
+  status         GymStatus @default(ACTIVE)
+  commission     Commission? @relation(fields: [commissionId], references: [id])
+  commissionId   String?
+
+  fighters       Fighter[]
+  fighterHistory FighterGymHistory[]
+  users          User[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model FighterGymHistory {
+  id        String    @id @default(cuid())
+  fighter   Fighter   @relation(fields: [fighterId], references: [id])
+  fighterId String
+  gym       Gym       @relation(fields: [gymId], references: [id])
+  gymId     String
+  startDate DateTime  @default(now())
+  endDate   DateTime?
+  current   Boolean   @default(true)
+}
+
+// ---------------------------------------------------------------------------
+// FIGHTERS (core entity)
+// ---------------------------------------------------------------------------
+
+model Fighter {
+  id             String        @id @default(cuid())
+  slug           String        @unique
+  fullName       String
+  publicName     String // ring name / display name
+  dateOfBirth    DateTime?
+  nationality    String?
+  city           City?         @relation(fields: [cityId], references: [id])
+  cityId         String?
+  gender         Gender
+  weightClass    String
+  photoUrl       String?
+  bio            String?
+  status         FighterStatus @default(PENDING)
+
+  commission     Commission?   @relation(fields: [commissionId], references: [id])
+  commissionId   String?
+  gym            Gym?          @relation(fields: [gymId], references: [id])
+  gymId          String?
+  coachName      String?
+  licenseNumber  String?
+
+  verificationStatus VerificationStatus @default(UNVERIFIED)
+  verifiedAt         DateTime?
+  verifiedById       String?
+
+  // Denormalized, auto-recomputed record summary — never the source of truth
+  wins      Int @default(0)
+  losses    Int @default(0)
+  draws     Int @default(0)
+  koWins    Int @default(0)
+  totalFights Int @default(0)
+
+  gymHistory     FighterGymHistory[]
+  fightRecords   FightRecord[]
+  licenses       License[]
+  rankingEntries RankingEntry[]
+  benefitGrants  FighterBenefit[]
+  fightsAsA      Fight[]       @relation("FightFighterA")
+  fightsAsB      Fight[]       @relation("FightFighterB")
+  user           User?
+  verificationLogs VerificationLog[]
+
+  // Fight & Event Engine
+  opportunitiesAsA FightOpportunity[] @relation("OpportunityFighterA")
+  opportunitiesAsB FightOpportunity[] @relation("OpportunityFighterB")
+  sponsorships     Sponsorship[]
+  membership       BoxerMembership?
+  supportTasks     Task[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([verificationStatus])
+}
+
+// ---------------------------------------------------------------------------
+// FIGHT RECORD (structured, not free text)
+// ---------------------------------------------------------------------------
+
+model FightRecord {
+  id           String      @id @default(cuid())
+  fighter      Fighter     @relation(fields: [fighterId], references: [id])
+  fighterId    String
+  date         DateTime
+  opponentName String
+  result       FightResult
+  method       FightMethod
+  round        Int?
+  decisionNote String?
+  venue        String?
+  city         String?
+  country      String?
+  eventName    String?
+  commission   Commission? @relation(fields: [commissionId], references: [id])
+  commissionId String?
+  notes        String?
+  source       String?
+
+  verificationStatus VerificationStatus @default(UNVERIFIED)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([fighterId])
+}
+
+// ---------------------------------------------------------------------------
+// LICENSES
+// ---------------------------------------------------------------------------
+
+model License {
+  id             String        @id @default(cuid())
+  licenseNumber  String        @unique
+  fighter        Fighter       @relation(fields: [fighterId], references: [id])
+  fighterId      String
+  commission     Commission    @relation(fields: [commissionId], references: [id])
+  commissionId   String
+  type           String // e.g. "professional", "amateur", "trainer"
+  issuedAt       DateTime
+  expiresAt      DateTime?
+  status         LicenseStatus @default(PENDING)
+  documentUrl    String?
+  notes          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([expiresAt])
+}
+
+// ---------------------------------------------------------------------------
+// RANKINGS
+// ---------------------------------------------------------------------------
+
+model Ranking {
+  id           String   @id @default(cuid())
+  commission   Commission? @relation(fields: [commissionId], references: [id])
+  commissionId String?
+  weightClass  String
+  region       String? // free text scope: "Cd. Juárez", "Chihuahua", "Zona Norte"
+  period       String // e.g. "2026-Q3"
+  updatedAt    DateTime @updatedAt
+  createdAt    DateTime @default(now())
+
+  entries RankingEntry[]
+}
+
+model RankingEntry {
+  id        String   @id @default(cuid())
+  ranking   Ranking  @relation(fields: [rankingId], references: [id])
+  rankingId String
+  fighter   Fighter  @relation(fields: [fighterId], references: [id])
+  fighterId String
+  position  Int
+  points    Int?
+  status    String? // e.g. "active", "provisional"
+  notes     String?
+
+  @@unique([rankingId, fighterId])
+}
+
+// ---------------------------------------------------------------------------
+// VERIFICATION LOG
+// ---------------------------------------------------------------------------
+
+model VerificationLog {
+  id         String   @id @default(cuid())
+  entityType String // "Fighter", "FightRecord", "License", etc.
+  entityId   String
+  action     String // "verified", "rejected", "reverted"
+  notes      String?
+  userId     String?
+  fighter    Fighter? @relation(fields: [fighterId], references: [id])
+  fighterId  String?
+  createdAt  DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// BENEFITS
+// ---------------------------------------------------------------------------
+
+model Benefit {
+  id               String          @id @default(cuid())
+  name             String
+  category         BenefitCategory
+  description      String?
+  providerName     String?
+  city             String?
+  state            String?
+  country          String?
+  active           Boolean         @default(true)
+  eligibilityRules String? // free text for V1; structured rules in later version
+
+  grants FighterBenefit[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model FighterBenefit {
+  id        String   @id @default(cuid())
+  fighter   Fighter  @relation(fields: [fighterId], references: [id])
+  fighterId String
+  benefit   Benefit  @relation(fields: [benefitId], references: [id])
+  benefitId String
+  grantedAt DateTime @default(now())
+  notes     String?
+
+  @@unique([fighterId, benefitId])
+}
+
+// ---------------------------------------------------------------------------
+// COMMUNITY & SPONSORS (foundations only — no payments/social yet)
+// ---------------------------------------------------------------------------
+
+model CommunityMember {
+  id               String           @id @default(cuid())
+  user             User             @relation(fields: [userId], references: [id])
+  userId           String           @unique
+  membershipStatus MembershipStatus @default(ACTIVE)
+  membershipType   MembershipType   @default(FAN)
+  city             String?
+  country          String?
+  joinedAt         DateTime         @default(now())
+}
+
+model Sponsor {
+  id          String   @id @default(cuid())
+  companyName String
+  contactName String?
+  contactEmail String?
+  industry    String?
+  city        String?
+  state       String?
+  country     String?
+  website     String?
+  logoUrl     String?
+  status      String   @default("active")
+
+  // A SPONSOR-role user can log in and see only their own sponsor's pipeline —
+  // same pattern as Fighter.user / Gym.users.
+  user User?
+
+  sponsorships Sponsorship[]
+  createdAt    DateTime @default(now())
+}
+
+model Sponsorship {
+  id        String            @id @default(cuid())
+  sponsor   Sponsor           @relation(fields: [sponsorId], references: [id])
+  sponsorId String
+  program   String // e.g. "Fondo de boxeadores", event name, fighter program
+
+  // A sponsorship can be tied to a fighter, an event, or both.
+  fighter   Fighter? @relation(fields: [fighterId], references: [id])
+  fighterId String?
+  event     Event?   @relation(fields: [eventId], references: [id])
+  eventId   String?
+
+  proposedAmount  Decimal? @db.Decimal(12, 2)
+  confirmedAmount Decimal? @db.Decimal(12, 2)
+  currency        String   @default("MXN")
+  benefits        String? // contraprestación — what the sponsor gets
+  responsible     User?    @relation(fields: [responsibleId], references: [id])
+  responsibleId   String?
+
+  startDate DateTime?
+  endDate   DateTime?
+  status    SponsorshipStatus @default(DISCOVERED)
+  notes     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// BOXER MEMBERSHIP — the boxer pays this (symbolic, $50 MXN/month default).
+// Not the main revenue driver — see docs. Price is configurable per record,
+// never hardcoded in application logic (see src/lib/config.ts).
+// ---------------------------------------------------------------------------
+
+model BoxerMembership {
+  id              String                   @id @default(cuid())
+  fighter         Fighter                  @relation(fields: [fighterId], references: [id])
+  fighterId       String                   @unique
+  status          BoxerMembershipStatus    @default(PENDING)
+  monthlyPrice    Decimal                  @db.Decimal(10, 2)
+  currency        String                   @default("MXN")
+  startDate       DateTime?
+  renewalDate     DateTime?
+  lastPaymentDate DateTime?
+  paymentStatus   MembershipPaymentStatus  @default(PENDING)
+  cancelledAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// EVENTS / FIGHTS (informational, not BOXXERA-owned promotions)
+// ---------------------------------------------------------------------------
+
+model Event {
+  id           String      @id @default(cuid())
+  name         String
+  date         DateTime
+  city         String
+  venue        String?
+  commission   Commission? @relation(fields: [commissionId], references: [id])
+  commissionId String?
+  // promoterName is kept as-is (not dropped) so nothing existing breaks;
+  // promoterId is the new, real relation — populate it going forward.
+  promoterName String?
+  promoter     User?       @relation(fields: [promoterId], references: [id])
+  promoterId   String?
+  status       EventStatus @default(SCHEDULED)
+
+  // --- Event Economics (Digital Fight & Event Engine) -----------------------
+  capacity            Int?
+  expectedAttendance  Int?
+  eventOwner          EventOwner @default(EXTERNAL_PROMOTER)
+
+  fights          Fight[]
+  opportunities   FightOpportunity[]
+  costs           EventCost[]
+  revenues        EventRevenue[]
+  tasks           Task[]
+  sponsorships    Sponsorship[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Fight {
+  id          String       @id @default(cuid())
+  event       Event        @relation(fields: [eventId], references: [id])
+  eventId     String
+  fighterA    Fighter      @relation("FightFighterA", fields: [fighterAId], references: [id])
+  fighterAId  String
+  fighterB    Fighter      @relation("FightFighterB", fields: [fighterBId], references: [id])
+  fighterBId  String
+  weightClass String
+  // Result/method/round remain the historical-record fields (populated once
+  // COMPLETED). They coexist with the new pre-fight workflow fields below.
+  result      FightResult?
+  method      FightMethod?
+  round       Int?
+
+  // --- Fight & Event Engine workflow ----------------------------------------
+  status           FightStatus     @default(DRAFT)
+  purseA           Decimal?        @db.Decimal(12, 2)
+  purseB           Decimal?        @db.Decimal(12, 2)
+  purseCurrency    String          @default("MXN")
+  commissionStatus ApprovalStatus  @default(PENDING)
+  medicalStatus    ApprovalStatus  @default(PENDING)
+  contractStatus   ApprovalStatus  @default(PENDING)
+
+  // A Fight created by converting an approved opportunity keeps the link back
+  // (never the reverse — the opportunity's full economic state is NOT copied,
+  // only structural fields, per the conversion rule).
+  opportunity   FightOpportunity? @relation(fields: [opportunityId], references: [id])
+  opportunityId String?           @unique
+
+  tasks Task[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// FIGHT OPPORTUNITY — the new central object of the Fight & Event Engine
+// ---------------------------------------------------------------------------
+
+model FightOpportunity {
+  id       String   @id @default(cuid())
+  fighterA Fighter  @relation("OpportunityFighterA", fields: [fighterAId], references: [id])
+  fighterAId String
+  fighterB Fighter  @relation("OpportunityFighterB", fields: [fighterBId], references: [id])
+  fighterBId String
+
+  weightClass   String
+  proposedDate  DateTime?
+  proposedCity  String?
+  proposedVenue String?
+  commission    Commission? @relation(fields: [commissionId], references: [id])
+  commissionId  String?
+
+  source    OpportunitySource  @default(BOXXERA)
+  createdBy User?              @relation(fields: [createdById], references: [id])
+  createdById String?
+  status    OpportunityStatus  @default(DISCOVERED)
+
+  // Scores — always computed by lib/matchmaking.ts, never hand-edited blind.
+  sportingScore   Int?
+  commercialScore Int?
+  logisticsScore  Int?
+  economicScore   Int?
+  totalScore      Int?
+  explanation     Json? // structured explanation payload (see lib/matchmaking.ts)
+  dataConfidence  DataConfidence @default(ASSUMED)
+
+  // Economics — always labeled with confidence, never presented as confirmed.
+  estimatedCost    Decimal? @db.Decimal(12, 2)
+  estimatedRevenue Decimal? @db.Decimal(12, 2)
+  estimatedProfit  Decimal? @db.Decimal(12, 2)
+  currency         String   @default("MXN")
+
+  event   Event? @relation(fields: [eventId], references: [id])
+  eventId String?
+
+  fight Fight? // set once CONVERTED_TO_FIGHT
+
+  tasks Task[]
+  votes OpportunityVote[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([fighterAId])
+  @@index([fighterBId])
+}
+
+// ---------------------------------------------------------------------------
+// PUBLIC VOTE — real demand signal, feeds commercialScore (never replaces
+// human approval, only informs it — same human-in-the-loop rule as everywhere
+// else in the engine)
+// ---------------------------------------------------------------------------
+
+model OpportunityVote {
+  id             String           @id @default(cuid())
+  opportunity    FightOpportunity @relation(fields: [opportunityId], references: [id])
+  opportunityId  String
+  // Anonymous, cookie-based voter key — no account required to vote.
+  voterKey       String
+  city           String?
+  createdAt      DateTime         @default(now())
+
+  @@unique([opportunityId, voterKey])
+  @@index([opportunityId])
+}
+
+// ---------------------------------------------------------------------------
+// EVENT ECONOMICS — costs, revenue, always computed, never hand-totaled
+// ---------------------------------------------------------------------------
+
+model EventCost {
+  id          String            @id @default(cuid())
+  event       Event             @relation(fields: [eventId], references: [id])
+  eventId     String
+  category    EventCostCategory
+  description String?
+  amount      Decimal           @db.Decimal(12, 2)
+  currency    String            @default("MXN")
+  vendor      String?
+  confidence  DataConfidence    @default(ESTIMATED)
+  status      LineItemStatus    @default(PLANNED)
+  paidAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([eventId])
+}
+
+model EventRevenue {
+  id          String                @id @default(cuid())
+  event       Event                 @relation(fields: [eventId], references: [id])
+  eventId     String
+  category    EventRevenueCategory
+  description String?
+  amount      Decimal               @db.Decimal(12, 2)
+  currency    String                @default("MXN")
+  source      String?
+  confidence  DataConfidence        @default(ESTIMATED)
+  status      LineItemStatus        @default(PLANNED)
+  receivedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([eventId])
+}
+
+// ---------------------------------------------------------------------------
+// TASKS — lightweight follow-ups generated when an opportunity/fight advances
+// ---------------------------------------------------------------------------
+
+model Task {
+  id             String      @id @default(cuid())
+  title          String
+  category       String // "commission" | "medical" | "contract" | "venue" | "sponsor" | "production" | "other"
+  requestType    SupportRequestType? // set only for "Mi Apoyo BOXXERA" boxer requests
+  status         TaskStatus  @default(OPEN)
+  assignedTo     User?       @relation(fields: [assignedToId], references: [id])
+  assignedToId   String?
+  opportunity    FightOpportunity? @relation(fields: [opportunityId], references: [id])
+  opportunityId  String?
+  fight          Fight?      @relation(fields: [fightId], references: [id])
+  fightId        String?
+  event          Event?      @relation(fields: [eventId], references: [id])
+  eventId        String?
+  // The boxer this task is about — only set for support requests
+  // ("Mi Apoyo BOXXERA"). This is navigation/coordination, never a clinical
+  // or legal case file (see brief section 5): no diagnosis, no case notes
+  // beyond what the boxer typed.
+  fighter        Fighter?    @relation(fields: [fighterId], references: [id])
+  fighterId      String?
+  notes          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// AUDIT LOG
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  user       User?    @relation(fields: [userId], references: [id])
+  userId     String?
+  action     String // "create", "update", "delete", "verify", "suspend", etc.
+  entityType String
+  entityId   String
+  oldValue   Json?
+  newValue   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}

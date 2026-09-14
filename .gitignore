@@ -1,0 +1,41 @@
+# Dependencias
+/node_modules
+/.pnp
+.pnp.js
+
+# Build de Next.js
+/.next/
+/out/
+next-env.d.ts
+
+# Produccion
+/build
+
+# Variables de entorno — NUNCA subir: contienen credenciales de la BD
+.env
+.env*.local
+.env.production
+
+# Prisma — cliente generado
+/prisma/generated
+/node_modules/.prisma
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Editores
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Vercel / Amplify
+.vercel
+.amplify-hosting
+amplify_outputs*
