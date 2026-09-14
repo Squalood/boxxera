@@ -5,6 +5,11 @@
 
 generator client {
   provider = "prisma-client-js"
+  // "native" es para tu maquina local. "rhel-openssl-3.0.x" es el motor que
+  // necesita AWS Amplify: el renderizado del lado del servidor corre sobre
+  // Lambda (Amazon Linux 2023, OpenSSL 3), no sobre Windows. Sin este target,
+  // el build pasa pero la app falla en produccion al primer query.
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {

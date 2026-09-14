@@ -1,0 +1,42 @@
+# AWS Amplify Hosting — BOXXERA
+#
+# Requisitos en la consola de Amplify (App settings -> Environment variables),
+# marcados para TODAS las ramas que se construyan:
+#
+#   DATABASE_URL                cadena de conexion POOLED de Neon (la que
+#                               incluye "-pooler" en el host). El SSR corre
+#                               sobre Lambda y abre muchas conexiones
+#                               concurrentes; sin el pooler se agota el limite.
+#   NEXTAUTH_SECRET             generar uno nuevo, distinto al de desarrollo
+#   NEXTAUTH_URL                la URL que asigne Amplify, con https://
+#   NEXT_PUBLIC_APP_NAME        BOXXERA
+#   NEXT_PUBLIC_DEFAULT_COUNTRY MX
+#
+# Importante: DATABASE_URL tiene que existir tambien durante el BUILD, no solo
+# en tiempo de ejecucion. La portada consulta la base de datos al construirse.
+
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - nvm use 20
+        - npm ci
+        # Genera el cliente de Prisma incluyendo el motor de Linux. El proyecto
+        # no tiene postinstall, asi que este paso es obligatorio.
+        - npx prisma generate
+    build:
+      commands:
+        # Aplica migraciones pendientes antes de compilar. Comodo para staging;
+        # si mas adelante hay un entorno de produccion serio, conviene sacar
+        # esta linea y correr las migraciones como un paso aparte y deliberado.
+        - npx prisma migrate deploy
+        - npm run build
+  artifacts:
+    baseDirectory: .next
+    files:
+      - '**/*'
+  cache:
+    paths:
+      - node_modules/**/*
+      - .next/cache/**/*
